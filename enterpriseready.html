@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Enterprise readiness plan</title>
+  <style>
+    body { max-width: 70rem; margin: 2rem auto; padding: 0 1rem; font: 1rem/1.6 system-ui, sans-serif; color: #202124; background: #fff; }
+    h1, h2, h3 { line-height: 1.25; }
+    a { color: #0645ad; }
+    code { overflow-wrap: anywhere; }
+    .table-wrap { overflow-x: auto; }
+    table { border-collapse: collapse; width: 100%; }
+    th, td { border: 1px solid #bbb; padding: .75rem; text-align: left; vertical-align: top; }
+    .notice { border-left: .3rem solid #0645ad; padding: .5rem 1rem; background: #f0f5ff; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Enterprise readiness plan</h1>
+    <p>Planning reference for <a href="https://github.com/eldong/ado-copilot-code-review/issues/1">issue #1: Enterprise Ready</a>. Assessed November 2, 2026.</p>
+    <p class="notice"><strong>Proposal only.</strong> This document does not implement authentication changes, provision infrastructure, or authorize a migration.</p>
+
+    <h2>Goal and recommendation</h2>
+    <p>Run automated Azure DevOps pull request reviews without personal access tokens (PATs), without depending on an employee's identity or Copilot seat, and with company-owned billing and governance.</p>
+    <p><strong>Recommended starting point:</strong> keep reviews in Azure Pipelines, use its existing job-token authentication for Azure DevOps, and evaluate the existing custom model provider mode with a company-owned model endpoint. This is the smallest architectural change if billing to the company's model provider, rather than to GitHub Copilot, is acceptable.</p>
+    <p>If GitHub-hosted Copilot models and organization-level Copilot billing are mandatory, evaluate a GitHub Actions execution backend instead. Do not assume that a generic GitHub App token or an Azure workload identity can authenticate Copilot directly in Azure Pipelines.</p>
+
+    <h2>What already exists</h2>
+    <ul>
+      <li><strong>Azure DevOps:</strong> <code>useSystemAccessToken: true</code> uses <code>System.AccessToken</code> as a bearer token. PAT authentication remains an alternative. The pipeline Build Service needs repository read access and <strong>Contribute to pull requests</strong> permission.</li>
+      <li><strong>Default Copilot path:</strong> the task requires <code>githubPat</code> and exports it as <code>GH_TOKEN</code>. This authenticates as the token's user; replacing an employee with a shared account would not create a workload identity.</li>
+      <li><strong>Custom provider path:</strong> <code>useCustomModelProvider</code> makes the GitHub PAT optional and accepts a provider endpoint, type, optional API key, and explicit model. Supported types in the task are <code>openai</code>, <code>azure</code>, and <code>anthropic</code>. Usage goes to the selected provider rather than a user's Copilot model allowance.</li>
+      <li><strong>Current integration boundary:</strong> custom provider settings are passed through <code>COPILOT_PROVIDER_BASE_URL</code>, <code>COPILOT_PROVIDER_TYPE</code>, and <code>COPILOT_PROVIDER_API_KEY</code>. The task does not currently implement a federated model-provider token flow.</li>
+      <li><strong>Agent permissions:</strong> the Copilot invocation permits all paths and tools and explicitly denies <code>git push</code>. That denial alone is not an enterprise isolation boundary.</li>
+    </ul>
+    <p>Repository references: <a href="CopilotCodeReviewV1/index.ts">orchestration and authentication</a>, <a href="CopilotCodeReviewV1/task.json">task inputs</a>, and <a href="README.md">configuration and permission guidance</a>.</p>
+
+    <h2>Separate the requirements</h2>
+    <ul>
+      <li><strong>No PATs:</strong> achievable using the existing Azure job token and a custom model provider. A provider API key is not a PAT, but is still a long-lived secret.</li>
+      <li><strong>No individual dependency:</strong> the model resource, credentials, permissions, and billing must belong to the organization, with administration independent of an employee's account.</li>
+      <li><strong>No long-lived secrets:</strong> a stricter goal requiring workload federation or managed identity and a verified compatible model authentication path.</li>
+      <li><strong>Central billing:</strong> company payment for user Copilot seats is different from automation usage attributed directly to the organization.</li>
+    </ul>
+
+    <h2>Architecture choices</h2>
+    <div class="table-wrap">
+      <table>
+        <caption>Options to validate before implementation</caption>
+        <thead>
+          <tr><th scope="col">Option</th><th scope="col">Identity and billing</th><th scope="col">Work and limitations</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <th scope="row">A. Azure Pipelines + company model provider</th>
+            <td>Azure DevOps job token for PR operations; company-owned provider resource for model usage. No personal Copilot seat required for the custom-provider review path.</td>
+            <td>Smallest starting point. Validate the installed CLI's provider configuration and model support. A company-managed API key can prove the no-PAT path, but does not meet a secretless requirement.</td>
+          </tr>
+          <tr>
+            <th scope="row">B. Azure Pipelines + federated model access</th>
+            <td>Job token for Azure DevOps; an Azure service connection using workload identity federation, or an appropriate managed identity, for the model resource. Usage bills to the company's Azure resource.</td>
+            <td>Requires implementation. Verify whether the chosen CLI/provider combination accepts and can refresh Microsoft Entra bearer tokens. If not, evaluate a narrowly scoped authenticated gateway or another model client; do not pass an Entra token as an API key without verifying protocol support.</td>
+          </tr>
+          <tr>
+            <th scope="row">C. GitHub Actions + organization-billed Copilot</th>
+            <td>GitHub documents built-in <code>GITHUB_TOKEN</code> authentication with <code>copilot-requests: write</code>. In an organization-owned repository, usage is metered directly to that organization when its Copilot CLI organization-billing policy is enabled.</td>
+            <td>Larger architectural change: execute the review in GitHub Actions, securely dispatch work from Azure DevOps, and return findings. The Actions token is not an Azure Pipelines credential or an Azure DevOps token. Cross-platform dispatch, repository-content transfer, and Azure DevOps result posting need a separate approved identity design.</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <p><strong>Not a solution by itself:</strong> buying Copilot Business or Enterprise seats, renaming the PAT input, using a machine user's PAT, or substituting an arbitrary GitHub App installation token. None establishes a supported, user-independent Copilot authentication flow for this Azure Pipelines task.</p>
+
+    <h2>Phased delivery plan</h2>
+    <ol>
+      <li>
+        <h3>Agree on the target</h3>
+        <p>Decide whether GitHub Copilot billing is mandatory or company-owned provider billing is acceptable; whether API keys are allowed or all credentials must be short-lived; and whether execution must remain in Azure Pipelines. Confirm Azure DevOps Services versus Server, agent hosting, network restrictions, model availability, and data residency requirements.</p>
+        <p><strong>Exit criterion:</strong> platform, security, and billing owners approve one architecture and its definition of “no personal dependency.”</p>
+      </li>
+      <li>
+        <h3>Prove the smallest no-PAT path</h3>
+        <p>In a non-production pipeline, enable <code>useSystemAccessToken</code>, expose the job token as required by the pipeline, and grant only the needed repository permissions. For option A, configure the existing custom-provider inputs with a company-owned endpoint, omit both PAT inputs, and select a model supporting tool calling and streaming.</p>
+        <p>Verify compatibility with a specific CLI version before relying on current environment-variable configuration: current GitHub documentation describes provider configuration through <code>providers.json</code> and <code>COPILOT_PROVIDERS_CONFIG</code>. Identify any required adaptation rather than assuming old and current mechanisms are interchangeable.</p>
+        <p><strong>Exit criterion:</strong> a review reads a PR, posts a comment, updates an earlier automated thread, and records usage on the intended company billing resource with no PAT supplied.</p>
+      </li>
+      <li>
+        <h3>Implement only the selected authentication gap</h3>
+        <p>For option A, limit changes to verified provider compatibility, validation, and deployment documentation. For option B, add explicit federated authentication configuration, least-privilege model-resource access, short-lived token acquisition, and token refresh for long-running reviews. For option C, prototype the Actions backend and secure Azure DevOps handoff before modifying the extension's execution contract.</p>
+        <p>Keep existing PAT mode available for compatibility unless deprecation is separately approved. Enterprise mode must fail clearly on missing or expired workload credentials; it must not silently fall back to a developer login, PAT, or different billing account.</p>
+        <p><strong>Exit criterion:</strong> repeatable unattended execution with the selected company identity and documented credential lifecycle.</p>
+      </li>
+      <li>
+        <h3>Apply enterprise guardrails</h3>
+        <p>Use isolated, preferably ephemeral agents; restrict tool access, filesystem scope, network egress, and credentials visible to the model process. Treat PR content as untrusted and do not expose privileged credentials to untrusted fork runs. Prefer deterministic comment posting outside the model process where practical.</p>
+        <p>Approve provider retention, training, residency, and source-code handling policies. Pin and verify CLI releases, redact credentials and sensitive prompt content from logs, record correlation IDs and usage without unnecessary source content, and configure concurrency, timeout, and spend controls. Verify which budgets enforce limits versus merely send alerts. Clean up temporary credentials and provider configuration on success and failure.</p>
+        <p><strong>Exit criterion:</strong> security and cost owners approve the isolation, audit, data-handling, and incident-response design.</p>
+      </li>
+      <li>
+        <h3>Validate and roll out incrementally</h3>
+        <p>Use the existing TypeScript build and JavaScript/PowerShell test infrastructure. Add focused tests for the chosen authentication mode, missing credentials, expired tokens and renewal, forbidden access, secret redaction, cleanup, and absence of personal-credential fallback. Preserve regression coverage for PAT mode and existing review behavior.</p>
+        <p>Run a sandbox integration review under the intended workload identity, verify actual billing attribution, and test that removing an employee's access does not stop the automation. Pilot on one repository, document permissions and operations, then expand with an explicit rollback to the last approved configuration.</p>
+        <p><strong>Exit criterion:</strong> all acceptance checks below pass before wider deployment.</p>
+      </li>
+    </ol>
+
+    <h2>Acceptance checklist</h2>
+    <ul>
+      <li>No Azure DevOps or GitHub PAT is configured in the enterprise deployment.</li>
+      <li>No employee's CLI login or Copilot seat is required for successful reviews.</li>
+      <li>Model usage appears on the approved company provider resource or GitHub organization's billing reports.</li>
+      <li>PR reads, comment creation, and automated thread updates work under least-privilege permissions.</li>
+      <li>If secretless operation is required, credentials are short-lived and long-running reviews handle renewal.</li>
+      <li>Invalid credentials fail without personal-identity fallback; logs and artifacts contain no credentials.</li>
+      <li>Untrusted PRs cannot obtain privileged tokens or execute unrestricted actions in a privileged environment.</li>
+      <li>Existing supported authentication paths continue to work, with documented migration and rollback procedures.</li>
+    </ul>
+
+    <h2>Verified external references</h2>
+    <p>Capabilities and policies can change. Recheck these sources against the selected CLI release and tenant before implementation.</p>
+    <ul>
+      <li><a href="https://learn.microsoft.com/en-us/azure/devops/pipelines/process/access-tokens?view=azure-devops">Microsoft: Azure Pipelines job access tokens and Build Service permissions</a>.</li>
+      <li><a href="https://learn.microsoft.com/en-us/azure/devops/pipelines/library/add-devops-entra-service-connection?view=azure-devops">Microsoft: Azure DevOps access with Microsoft Entra workload identity</a>.</li>
+      <li><a href="https://docs.github.com/en/copilot/how-tos/copilot-cli/customize-copilot/add-llm-models">GitHub: custom model providers, configuration, and bearer-token support</a>. Bearer-token configuration alone does not establish automatic Entra token acquisition or renewal.</li>
+      <li><a href="https://docs.github.com/en/copilot/concepts/agent-capabilities/agent-powered-workflows-and-operations/copilot-cli-in-github-actions">GitHub: Copilot CLI authentication and organization billing in Actions</a>.</li>
+      <li><a href="https://docs.github.com/en/copilot/how-tos/copilot-cli/use-copilot-cli-in-actions">GitHub: Actions setup, organization policy, and required token permission</a>.</li>
+    </ul>
+  </main>
+</body>
+</html>
